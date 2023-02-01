@@ -24,6 +24,10 @@ async fn test_simple() {
 
     assert_eq!(g1, g2);
 
+    let guilds = Guild::list(&pool).await.unwrap();
+
+    assert!(!guilds.is_empty());
+
     g2.name = "test2".to_string();
 
     let g3 = g2.update(&pool).await.unwrap();

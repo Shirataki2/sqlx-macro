@@ -115,11 +115,25 @@ pub fn derive_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
     };
 
+    let list_query = format!(
+        "SELECT * FROM {}",
+        table_name
+    );
+
+    let list_impl = quote! {
+        impl #table_ident {
+            pub async fn list(db: &sqlx::PgPool) -> sqlx::Result<Vec<Self>> {
+                sqlx::query_as!(#table_ident, #list_query).fetch_all(db).await
+            }
+        }
+    };
+
     let gen = quote! {
         #get_impl
         #create_impl
         #update_impl
         #delete_impl
+        #list_impl
     };
     gen.into()
 }
