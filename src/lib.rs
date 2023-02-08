@@ -73,15 +73,24 @@ pub fn derive_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
     };
 
-    let increment_without_pk = (0..fields.len() - 1).map(|i| format!("${}", i + 2)).collect::<Vec<_>>().join(", ");
+    let increment_without_pk = (0..fields.len() - 1).map(|i| format!("${}", i + 2)).collect::<Vec<_>>();
 
-    let update_query = format!(
-        "UPDATE {} SET ({}) = ({}) WHERE {} = $1 RETURNING *",
-        table_name,
-        fields.iter().filter(|f| !f.pk).map(|f| f.ident.as_ref().unwrap().to_string()).collect::<Vec<_>>().join(", "),
-        increment_without_pk,
-        pk_ident
-    );
+    let update_query = match increment_without_pk.len() {
+        1 => format!(
+            "UPDATE {} SET {} = {} WHERE {} = $1 RETURNING *",
+            table_name,
+            fields.iter().filter(|f| !f.pk).map(|f| f.ident.as_ref().unwrap().to_string()).collect::<Vec<_>>().join(", "),
+            increment_without_pk[0],
+            pk_ident
+        ),
+        _ => format!(
+            "UPDATE {} SET ({}) = ({}) WHERE {} = $1 RETURNING *",
+            table_name,
+            fields.iter().filter(|f| !f.pk).map(|f| f.ident.as_ref().unwrap().to_string()).collect::<Vec<_>>().join(", "),
+            increment_without_pk.join(", "),
+            pk_ident
+        ),
+    };
 
     let update_fields = fields.iter().filter(|f| !f.pk).filter_map(|f| {
         match f.pk {
