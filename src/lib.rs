@@ -45,8 +45,21 @@ pub fn derive_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let get_impl = quote! {
         impl #table_ident {
+            /// Retrieves rows with the specified primary key from the database.
+            /// Returns an error if the row is not found.
             pub async fn get(db: &sqlx::PgPool, #pk_ident: #pk_ty) -> sqlx::Result<Self> {
                 sqlx::query_as!(#table_ident, #get_query, #pk_ident).fetch_one(db).await
+            }
+
+            /// Retrieves rows with the specified primary key from the database.
+            /// Returns None if the row is not found.
+            pub async fn optional_get(db: &sqlx::PgPool, #pk_ident: #pk_ty) -> sqlx::Result<Option<Self>> {
+                let result = sqlx::query_as!(#table_ident, #get_query, #pk_ident).fetch_one(db).await;
+                match result {
+                    Ok(guild) => Ok(Some(guild)),
+                    Err(sqlx::Error::RowNotFound) => Ok(None),
+                    Err(e) => Err(e),
+                }
             }
         }
     };
@@ -67,6 +80,7 @@ pub fn derive_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let create_impl = quote! {
         impl #table_ident {
+            /// Creates a new row in the database.
             pub async fn create(&self, db: &sqlx::PgPool) -> sqlx::Result<Self> {
                 sqlx::query_as!(#table_ident, #create_query, #(#create_fields),*).fetch_one(db).await
             }
@@ -104,6 +118,7 @@ pub fn derive_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let update_impl = quote! {
         impl #table_ident {
+            /// Updates the row in the database.
             pub async fn update(&self, db: &sqlx::PgPool) -> sqlx::Result<Self> {
                 sqlx::query_as!(#table_ident, #update_query, self.#pk_ident, #(#update_fields),*).fetch_one(db).await
             }
@@ -117,6 +132,7 @@ pub fn derive_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let delete_impl = quote! {
         impl #table_ident {
+            /// Deletes the row from the database.
             pub async fn delete(&self, db: &sqlx::PgPool) -> sqlx::Result<()> {
                 sqlx::query!(#delele_query, self.#pk_ident).execute(db).await?;
                 Ok(())
@@ -131,6 +147,7 @@ pub fn derive_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let list_impl = quote! {
         impl #table_ident {
+            /// Lists all rows in the database.
             pub async fn list(db: &sqlx::PgPool) -> sqlx::Result<Vec<Self>> {
                 sqlx::query_as!(#table_ident, #list_query).fetch_all(db).await
             }
