@@ -1,9 +1,9 @@
 extern crate proc_macro;
 
-use darling::{FromDeriveInput, FromField, ast, util};
-use proc_macro_error::{proc_macro_error, abort};
+use darling::{ast, util, FromDeriveInput, FromField};
+use proc_macro_error::{abort, proc_macro_error};
 use quote::quote;
-use syn::{Type, Ident, spanned::Spanned};
+use syn::{spanned::Spanned, Ident, Type};
 
 #[derive(FromDeriveInput)]
 #[darling(attributes(table), supports(struct_named))]
@@ -29,32 +29,53 @@ pub fn derive_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     let table = TableInput::from_derive_input(&input).unwrap();
     let table_ident = table.ident;
-    let table_name = table.name.unwrap_or_else(|| table_ident.to_string().to_lowercase());
+    let table_name = table
+        .name
+        .unwrap_or_else(|| table_ident.to_string().to_lowercase());
 
     let fields = match table.data {
         ast::Data::Struct(ref fields) => fields,
         _ => unreachable!("structs only"),
     };
 
-    let (pk_ident, pk_ty) = extract_pk(&input, fields);
+    let pk_ident_ty_pair = extract_pk(&input, fields);
+    let pk_idents = pk_ident_ty_pair
+        .iter()
+        .map(|(ident, _)| ident)
+        .collect::<Vec<_>>();
+    let pk_args = pk_ident_ty_pair
+        .iter()
+        .map(|(ident, ty)| quote! {#ident: #ty})
+        .collect::<Vec<_>>();
 
-    let get_query = format!(
-        "SELECT * FROM {} WHERE {} = $1",
-        table_name, pk_ident
-    );
+    let where_phrase = match pk_ident_ty_pair.len() {
+        0 => unreachable!("primary key not found"),
+        1 => format!("WHERE {} = $1", &pk_ident_ty_pair[0].0),
+        _ => {
+            let where_phrase = pk_ident_ty_pair
+                .iter()
+                .enumerate()
+                .map(|(i, (ident, _))| format!("{} = ${}", ident, i + 1))
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            format!("WHERE {}", where_phrase)
+        }
+    };
+
+    let get_query = format!("SELECT * FROM {} {}", table_name, where_phrase);
 
     let get_impl = quote! {
         impl #table_ident {
             /// Retrieves rows with the specified primary key from the database.
             /// Returns an error if the row is not found.
-            pub async fn get(db: &sqlx::PgPool, #pk_ident: #pk_ty) -> sqlx::Result<Self> {
-                sqlx::query_as!(#table_ident, #get_query, #pk_ident).fetch_one(db).await
+            pub async fn get(db: &sqlx::PgPool, #(#pk_args),*) -> sqlx::Result<Self> {
+                sqlx::query_as!(#table_ident, #get_query, #(#pk_idents),*).fetch_one(db).await
             }
 
             /// Retrieves rows with the specified primary key from the database.
             /// Returns None if the row is not found.
-            pub async fn optional_get(db: &sqlx::PgPool, #pk_ident: #pk_ty) -> sqlx::Result<Option<Self>> {
-                let result = sqlx::query_as!(#table_ident, #get_query, #pk_ident).fetch_one(db).await;
+            pub async fn get_optional(db: &sqlx::PgPool, #(#pk_args),*) -> sqlx::Result<Option<Self>> {
+                let result = sqlx::query_as!(#table_ident, #get_query, #(#pk_idents),*).fetch_one(db).await;
                 match result {
                     Ok(guild) => Ok(Some(guild)),
                     Err(sqlx::Error::RowNotFound) => Ok(None),
@@ -64,7 +85,10 @@ pub fn derive_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
     };
 
-    let increment = (0..fields.len()).map(|i| format!("${}", i + 1)).collect::<Vec<_>>().join(", ");
+    let increment = (0..fields.len())
+        .map(|i| format!("${}", i + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
 
     let create_query = format!(
         "INSERT INTO {} ({}) VALUES ({}) RETURNING *",
@@ -87,22 +111,22 @@ pub fn derive_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
     };
 
-    let increment_without_pk = (0..fields.len() - 1).map(|i| format!("${}", i + 2)).collect::<Vec<_>>();
+    let increment_without_pk = (0..fields.len() - pk_ident_ty_pair.len()).map(|i| format!("${}", i + pk_ident_ty_pair.len() + 1)).collect::<Vec<_>>();
 
     let update_query = match increment_without_pk.len() {
         1 => format!(
-            "UPDATE {} SET {} = {} WHERE {} = $1 RETURNING *",
+            "UPDATE {} SET {} = {} {} RETURNING *",
             table_name,
             fields.iter().filter(|f| !f.pk).map(|f| f.ident.as_ref().unwrap().to_string()).collect::<Vec<_>>().join(", "),
             increment_without_pk[0],
-            pk_ident
+            where_phrase,
         ),
         _ => format!(
-            "UPDATE {} SET ({}) = ({}) WHERE {} = $1 RETURNING *",
+            "UPDATE {} SET ({}) = ({}) {} RETURNING *",
             table_name,
             fields.iter().filter(|f| !f.pk).map(|f| f.ident.as_ref().unwrap().to_string()).collect::<Vec<_>>().join(", "),
             increment_without_pk.join(", "),
-            pk_ident
+            where_phrase,
         ),
     };
 
@@ -116,34 +140,36 @@ pub fn derive_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
     }).collect::<Vec<_>>();
 
+    let pk_ident_args = pk_idents
+        .iter()
+        .map(|ident| quote! { self.#ident })
+        .collect::<Vec<_>>();
+
     let update_impl = quote! {
         impl #table_ident {
             /// Updates the row in the database.
             pub async fn update(&self, db: &sqlx::PgPool) -> sqlx::Result<Self> {
-                sqlx::query_as!(#table_ident, #update_query, self.#pk_ident, #(#update_fields),*).fetch_one(db).await
+                sqlx::query_as!(#table_ident, #update_query, #(#pk_ident_args),* , #(#update_fields),*).fetch_one(db).await
             }
         }
     };
 
     let delele_query = format!(
-        "DELETE FROM {} WHERE {} = $1",
-        table_name, pk_ident
+        "DELETE FROM {} {}",
+        table_name, where_phrase
     );
 
     let delete_impl = quote! {
         impl #table_ident {
             /// Deletes the row from the database.
             pub async fn delete(&self, db: &sqlx::PgPool) -> sqlx::Result<()> {
-                sqlx::query!(#delele_query, self.#pk_ident).execute(db).await?;
+                sqlx::query!(#delele_query, #(#pk_ident_args),*).execute(db).await?;
                 Ok(())
             }
         }
     };
 
-    let list_query = format!(
-        "SELECT * FROM {}",
-        table_name
-    );
+    let list_query = format!("SELECT * FROM {}", table_name);
 
     let list_impl = quote! {
         impl #table_ident {
@@ -164,11 +190,13 @@ pub fn derive_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     gen.into()
 }
 
-fn extract_pk(input: &syn::DeriveInput, fields: &ast::Fields<TableField>) -> (Ident, Type) {
+fn extract_pk(input: &syn::DeriveInput, fields: &ast::Fields<TableField>) -> Vec<(Ident, Type)> {
     let pk_fields: Vec<_> = fields.iter().filter(|f| f.pk).collect();
     match pk_fields.len() {
         0 => abort!(input.span(), "Table `{}` has no primary key", input.ident),
-        1 => (pk_fields[0].ident.clone().unwrap(), pk_fields[0].ty.clone()),
-        _ => abort!(input.span(), "Table `{}` has multiple primary keys", input.ident),
+        _ => pk_fields
+            .iter()
+            .map(|pk_field| (pk_field.ident.clone().unwrap(), pk_field.ty.clone()))
+            .collect(),
     }
 }

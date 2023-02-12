@@ -1,10 +1,13 @@
 use sqlx_macros::Table;
 
 #[derive(Table, Debug, Clone)]
-pub struct Dictionary {
+#[table(name = "server_permission")]
+pub struct ServerPermission {
     #[table(pk)]
     pub guild_id: i64,
-    pub dict: String,
+    #[table(pk)]
+    pub tag: String,
+    pub permission_bit: i64,
 }
 
 #[tokio::test]
