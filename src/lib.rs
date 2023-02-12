@@ -74,7 +74,7 @@ pub fn derive_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
             /// Retrieves rows with the specified primary key from the database.
             /// Returns None if the row is not found.
-            pub async fn get_optional(db: &sqlx::PgPool, #(#pk_args),*) -> sqlx::Result<Option<Self>> {
+            pub async fn optional_get(db: &sqlx::PgPool, #(#pk_args),*) -> sqlx::Result<Option<Self>> {
                 let result = sqlx::query_as!(#table_ident, #get_query, #(#pk_idents),*).fetch_one(db).await;
                 match result {
                     Ok(guild) => Ok(Some(guild)),
